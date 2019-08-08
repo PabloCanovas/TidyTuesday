@@ -1,0 +1,222 @@
+---
+title: "TidyTuesday - Video games dataset"
+author: "Pablo Cánovas Tourné"
+date: "July 31, 2019"
+output:
+ html_document: 
+  toc: true
+  theme: united  
+  highlight: tango
+editor_options: 
+  chunk_output_type: console
+---
+
+I recently discovered TidyTuesday, an online data project conducted by
+[R for Data Science Online Learning Community](https://github.com/rfordatascience) where a dataset is proposed weekly to people to analyze and find some insights using the tools in the [tidyverse](https://www.tidyverse.org/) R ecosystem to clean, wrangle, tidy and plot a new dataset every Tuesday.
+
+This week the dataset was about video games, and I thought it would be nice to take a look at the data.
+
+
+```{r setup,echo=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, 
+                      fig.width = 10, fig.height = 6)
+```
+
+```{r}
+library(tidyverse)
+library(ggthemes)
+library(ggridges)
+library(ggrepel)
+library(viridis)
+video_games <- readr::read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2019/2019-07-30/video_games.csv")
+```
+
+
+```{r}
+df <- video_games %>% 
+  mutate(release_date = lubridate::mdy(release_date),
+         price = price %>% as.numeric() %>% round()) %>% 
+  drop_na(release_date, metascore, price, publisher) %>%
+  mutate(owners = owners %>% str_split("[..]") %>%
+           map_int(~.x %>% first() %>% str_trim("right") %>% str_replace_all("[,]", "") %>% as.integer())) %>% 
+  mutate(publisher = case_when(publisher %>% str_detect("SEGA") ~ "SEGA",
+                               publisher %>% tolower() %>% str_detect("square enix") ~ "Square Enix",
+                               publisher %>% tolower() %>% str_detect("capcom") ~ "CAPCOM",
+                               publisher %>% tolower() %>% str_detect("2k") ~ "2K",
+                               TRUE ~ publisher),
+         game = case_when(game %>% str_detect("Guacamelee") ~ "Guacamelee!",
+                          TRUE ~ game),
+         developer = case_when(developer %>% str_detect("Firaxis Games") ~ "Firaxis Games - Aspyr",
+                               developer %>% str_detect("Gearbox Software") ~ "Gearbox Software - Aspyr",
+                               TRUE ~ developer)) %>% 
+  mutate_at(vars(developer, publisher), ~ as.factor(.))
+```
+
+Let's start with an overview of the score of the games released by publishers with more titles.
+
+
+```{r}
+big_publishers <- df %>% 
+  group_by(publisher) %>% 
+  summarise(N_by_publisher = n()) %>% 
+  ungroup() %>% 
+  top_n(10, N_by_publisher)
+df %>%
+  filter(publisher %in% big_publishers$publisher) %>% 
+  ggplot() + 
+  geom_violin(aes(fct_reorder(publisher, metascore, median), metascore,
+                   col = fct_reorder(publisher, metascore, median, .desc = TRUE)), 
+               alpha = .5, show.legend = F) +
+  geom_jitter(aes(publisher, metascore, col = publisher), size = 3, alpha = .4, show.legend = F) +
+  coord_flip() + 
+  theme(plot.title = element_text(size = 14)) + 
+  labs(title = "Score distribution from the 10 publishers with more titles", 
+       x = NULL,
+       y = "Metascore",
+       col = "Publisher")
+```
+
+What about the scores of the best rated publishers?
+
+```{r}
+top_publishers <- df %>% 
+  group_by(publisher) %>% 
+  mutate(N_by_publisher = n()) %>% 
+  filter(N_by_publisher >= 5) %>% 
+  summarise(median_score = median(metascore)) %>% 
+  ungroup() %>% 
+  top_n(10, median_score)
+df %>%
+  filter(publisher %in% top_publishers$publisher) %>% 
+  ggplot() + 
+  geom_violin(aes(fct_reorder(publisher, metascore, median), metascore,
+                   col = fct_reorder(publisher, metascore, median, .desc = TRUE)),
+               alpha = .5, show.legend = F) +
+  geom_jitter(aes(publisher, metascore, col = publisher), size = 3, alpha = .4, show.legend = F) +
+  coord_flip() + 
+  theme(plot.title = element_text(size = 14), 
+        axis.text.y.right = element_text(size = 13)) + 
+  labs(title = "Score distribution from top 10 best rated publishers", 
+       x = NULL)
+```
+
+All of them have a meddian metascore above 80 points!
+
+Now let's take a look at the evolution of the metascores and the amount of titles released through the years
+
+```{r, fig.height = 5}
+df %>% 
+  mutate(year = release_date %>% lubridate::year() %>% as.factor()) %>% 
+  group_by(year) %>% 
+  mutate(NGames_year = n()) %>% 
+  ggplot() + 
+  geom_density_ridges(aes(x = metascore, y = fct_rev(year), fill = NGames_year)) +
+  theme(plot.title = element_text(size = 14),
+        axis.title.y = element_text(angle = 0, vjust = .5)) + 
+  scale_fill_viridis(option = "C") + 
+  labs(title = "Metascore evolution through the years", y = NULL, x = "Metascore", fill = "Number of games per year")
+```
+
+It seems that with the increasing amount of titles released each year the metascore distribution got more uniform through the years.
+
+It would be interesting to catch a trend in prices too: 
+
+```{r, fig.height = 5}
+df %>% 
+  mutate(year = release_date %>% lubridate::year() %>% as.factor()) %>% 
+  group_by(year) %>% 
+  mutate(NGames_year = n()) %>% 
+  ggplot() + 
+  geom_density_ridges(aes(x = price, y = fct_rev(year), fill = NGames_year)) +
+  theme(plot.title = element_text(size = 14),
+        axis.title.y = element_text(angle = 0, vjust = .5)) + 
+  scale_fill_viridis(option = "C") + 
+  labs(title = "Average price evolution through the years",
+       y = NULL, x = "Price", fill = "Number of games per year")
+```
+
+Effectively, prices seems to have suffered a rise lately.
+
+Another way to look at it, allowing us to quantify *how much* the average price have risen:
+
+```{r, fig.height = 5}
+top_publishers <- df %>% 
+  group_by(publisher) %>% 
+  mutate(N_by_publisher = n()) %>% 
+  filter(N_by_publisher >= 5) %>% 
+  summarise(median_score = median(metascore)) %>% 
+  ungroup() %>% 
+  top_n(10, median_score)
+df %>% 
+  filter(publisher %in% top_publishers$publisher) %>% 
+  mutate(release_date = release_date %>% lubridate::ymd(),
+         year = release_date %>% lubridate::year() %>% as.factor()) %>% 
+  group_by(year, publisher) %>% 
+  mutate(mean_price = mean(price)) %>% 
+  ggplot() + 
+  geom_line(aes(x = year, y = mean_price, col = publisher, group = publisher)) +
+  geom_point(aes(x = year, y = mean_price, col = publisher)) + 
+  theme(plot.title = element_text(size = 14),
+        axis.title.y = element_text(angle = 0, vjust = .5)) + 
+  labs(title = "Average price evolution in games from top publishers",
+       x = "Year", y = "Average\n price", col = NULL)
+```
+
+
+That rise in price could be justified by an increase in the quality of the products.
+So the question is: does the trend in metascores match the trend in prices?
+
+Here we try to adress that question, including also the number of games per year, trying to detect if publishers are now trying to develop *less amount* but *better* video games.
+
+
+```{r, fig.height = 7}
+best_publishers <- df %>% 
+  group_by(publisher) %>% 
+  mutate(N_by_publisher = n()) %>% 
+  summarise(profit = sum(price*owners)/1e6) %>% 
+  ungroup() %>% 
+  top_n(12, profit)
+df %>% 
+  filter(publisher %in% best_publishers$publisher) %>%
+  mutate(release_date = release_date %>% lubridate::ymd(),
+         year = release_date %>% lubridate::year()) %>% 
+  group_by(year, publisher) %>% 
+  mutate(mean_score = mean(metascore),
+         mean_price = mean(price),
+         number_of_games = n()) %>% 
+  ungroup() %>% 
+  select(release_date, publisher, mean_score, mean_price, number_of_games) %>% 
+  gather(Var, Value, -release_date, -publisher, -number_of_games) %>% 
+  ggplot() + 
+  geom_line(aes(x = release_date, y = Value, col = Var)) +
+  geom_point(aes(x = release_date, y = Value, size = number_of_games, col = Var)) +
+  facet_wrap(~ publisher) + 
+  theme(axis.title.y = element_text(angle = 0, vjust = .5), 
+        plot.title = element_text(size = 14), 
+        plot.subtitle = element_text(size = 12)) +
+  labs(title = "Average Score and Price evolution by top publishers", 
+       subtitle = "Top publishers based on estimated profits",
+       x = "Release date", y = "Score\n & \nPrice") +
+  scale_color_tableau()
+```
+
+It seems that publishers are raising *prices* but *score* has the opposite trend, especially in companies like 2K.
+
+To finish, let's take a look to best sellers and their metascores:
+
+
+```{r, fig.height = 7}
+df %>% 
+  mutate(release_date = release_date %>% lubridate::ymd()) %>% 
+  top_n(16, owners) %>%
+  arrange(-owners) %>%
+  ggplot() + 
+  geom_point(aes(x = release_date, y = metascore, col = developer), size = 3, alpha = .8) + 
+  geom_text_repel(aes(x = release_date, y = metascore, label = game), point.padding = 0.25) + 
+  theme(plot.title = element_text(size = 14), 
+        legend.title = element_text(size = 11),
+        legend.text = element_text(size = 10),
+        axis.title.y = element_text(angle = 0, vjust= 0.5),
+        legend.position = "bottom") + 
+  labs(x = NULL, y = "Score", title = "Best sellers and their metascore", col = "Developer")
+```
